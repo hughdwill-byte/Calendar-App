@@ -6,14 +6,9 @@
 //
 
 import SwiftUI
+import EventKit
 
 // MARK: - Model
-
-struct EventSegment: Identifiable {
-    let id = UUID()
-    let width: CGFloat
-    let color: Color
-}
 
 struct FreeSlot: Identifiable {
     let id = UUID()
@@ -26,7 +21,7 @@ struct DayModel: Identifiable {
     let weekday: String
     let date: String
     let isToday: Bool
-    let segments: [EventSegment]
+    let slots: [Bool]          // 6 time blocks across the day; true = free
     let freeSlots: [FreeSlot]
 }
 
@@ -40,46 +35,97 @@ private extension Color {
     static let segGray16 = Color(red: 120/255, green: 120/255, blue: 128/255).opacity(0.16)
     static let shareBlue = Color(red: 0.00, green: 0.533, blue: 1.00)   // #08F
     static let fillTertiary = Color(red: 118/255, green: 118/255, blue: 128/255).opacity(0.12)
+    static let freeGreen = Color(red: 0.204, green: 0.780, blue: 0.349) // systemGreen — free time
 }
 
-// Sample busy-density bars + free windows, cycled across the week.
-// ponytail: placeholder data — swap for the user's real calendar/availability source.
-private func segmentPatterns() -> [[EventSegment]] {
-    [
-        [.init(width: 48, color: .segGray12), .init(width: 32, color: .segGray16),
-         .init(width: 16, color: .segCyan), .init(width: 32, color: .segGray12),
-         .init(width: 16, color: .segCyan)],
-        [.init(width: 32, color: .segGray16), .init(width: 16, color: .segOrange),
-         .init(width: 32, color: .segGray16), .init(width: 16, color: .segIndigo),
-         .init(width: 48, color: .segGray12)],
-        [.init(width: 24, color: .segGray12), .init(width: 24, color: .segIndigo),
-         .init(width: 40, color: .segGray16), .init(width: 24, color: .segCyan),
-         .init(width: 32, color: .segGray12)],
-    ]
+// Shared UserDefaults keys for settings that CalendarStore and SettingsView both read.
+enum SettingsKey {
+    static let windowStartHour = "windowStartHour"
+    static let blockCount = "blockCount"
+    static let blockHours = "blockHours"
 }
 
-private func freePatterns() -> [[FreeSlot]] {
-    [
-        [.init(start: "9:30 AM", end: "11:30 AM"), .init(start: "4:00 PM", end: "9:30 PM")],
-        [.init(start: "12:30 PM", end: "4:00 PM"), .init(start: "8:00 PM", end: "11:00 PM")],
-        [.init(start: "8:00 AM", end: "10:00 AM"), .init(start: "1:00 PM", end: "6:00 PM")],
-    ]
-}
+// Reads the user's real calendar and derives the weekly schedule,
+// 6-slot availability bar, and free-time windows from it.
+@MainActor @Observable
+final class CalendarStore {
+    var days: [DayModel] = []
+    var status: Status = .loading
+    enum Status { case loading, ready, denied }
 
-private func currentWeek() -> [DayModel] {
-    let cal = Calendar.current
-    guard let week = cal.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
-    let fmt = DateFormatter(); fmt.dateFormat = "EEEE"
-    let segs = segmentPatterns(), free = freePatterns()
-    return (0..<7).compactMap { offset in
-        guard let date = cal.date(byAdding: .day, value: offset, to: week.start) else { return nil }
-        let day = cal.component(.day, from: date)
-        return DayModel(
-            weekday: fmt.string(from: date).uppercased(),
-            date: "\(day)\(ordinalSuffix(day))",
-            isToday: cal.isDateInToday(date),
-            segments: segs[offset % segs.count],
-            freeSlots: free[offset % free.count])
+    // Waking window split into blocks — read live from UserDefaults so
+    // SettingsView edits take effect on the next load.
+    private var windowStartHour: Int {
+        UserDefaults.standard.object(forKey: SettingsKey.windowStartHour) as? Int ?? 8
+    }
+    private var blockCount: Int {
+        UserDefaults.standard.object(forKey: SettingsKey.blockCount) as? Int ?? 6
+    }
+    private var blockHours: Int {
+        UserDefaults.standard.object(forKey: SettingsKey.blockHours) as? Int ?? 2
+    }
+
+    private let store = EKEventStore()
+
+    func load() async {
+        do {
+            let granted = try await store.requestFullAccessToEvents()
+            guard granted else { status = .denied; return }
+            days = buildWeek()
+            status = .ready
+        } catch {
+            status = .denied
+        }
+    }
+
+    private func buildWeek() -> [DayModel] {
+        let cal = Calendar.current
+        guard let week = cal.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
+        let weekdayFmt = DateFormatter(); weekdayFmt.dateFormat = "EEEE"
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "h:mm a"
+        let blockLength = Double(blockHours) * 3600
+
+        return (0..<7).compactMap { offset in
+            guard let date = cal.date(byAdding: .day, value: offset, to: week.start) else { return nil }
+            let midnight = cal.startOfDay(for: date)
+            guard let windowStart = cal.date(bySettingHour: windowStartHour, minute: 0, second: 0, of: midnight),
+                  let dayEnd = cal.date(byAdding: .day, value: 1, to: midnight) else { return nil }
+
+            let predicate = store.predicateForEvents(withStart: midnight, end: dayEnd, calendars: nil)
+            let events = store.events(matching: predicate).filter { !$0.isAllDay }
+
+            // A block is free unless an event overlaps it.
+            let slots: [Bool] = (0..<blockCount).map { i in
+                let bStart = windowStart.addingTimeInterval(Double(i) * blockLength)
+                let bEnd = bStart.addingTimeInterval(blockLength)
+                return !events.contains { $0.startDate < bEnd && $0.endDate > bStart }
+            }
+
+            return DayModel(
+                weekday: weekdayFmt.string(from: date).uppercased(),
+                date: "\(cal.component(.day, from: date))\(ordinalSuffix(cal.component(.day, from: date)))",
+                isToday: cal.isDateInToday(date),
+                slots: slots,
+                freeSlots: freeWindows(from: slots, windowStart: windowStart,
+                                       blockLength: blockLength, fmt: timeFmt))
+        }
+    }
+
+    // Merge consecutive free blocks into labelled start/end windows.
+    private func freeWindows(from slots: [Bool], windowStart: Date,
+                             blockLength: Double, fmt: DateFormatter) -> [FreeSlot] {
+        var out: [FreeSlot] = []
+        var i = 0
+        while i < slots.count {
+            guard slots[i] else { i += 1; continue }
+            var j = i
+            while j < slots.count && slots[j] { j += 1 }
+            let start = windowStart.addingTimeInterval(Double(i) * blockLength)
+            let end = windowStart.addingTimeInterval(Double(j) * blockLength)
+            out.append(FreeSlot(start: fmt.string(from: start), end: fmt.string(from: end)))
+            i = j
+        }
+        return out
     }
 }
 
@@ -93,16 +139,9 @@ private func ordinalSuffix(_ n: Int) -> String {
 struct ContentView: View {
     var body: some View {
         TabView {
-            Tab("Home", systemImage: "house") { PlaceholderScreen(title: "Home") }
+            Tab("Home", systemImage: "house") { HomeView() }
             Tab("Calendar", systemImage: "calendar") { CalendarScreen() }
         }
-    }
-}
-
-private struct PlaceholderScreen: View {
-    let title: String
-    var body: some View {
-        ContentUnavailableView(title, systemImage: "square.dashed")
     }
 }
 
@@ -110,20 +149,53 @@ private struct PlaceholderScreen: View {
 
 private struct CalendarScreen: View {
     @State private var period: Period = .weekly
-    @State private var days: [DayModel] = currentWeek()
+    @State private var store = CalendarStore()
+    @AppStorage(SettingsKey.windowStartHour) private var windowStartHour: Int = 8
+    @AppStorage(SettingsKey.blockCount) private var blockCount: Int = 6
+    @AppStorage(SettingsKey.blockHours) private var blockHours: Int = 2
     enum Period { case weekly, monthly }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                periodToggle
-                ForEach(days) { DayCard(day: $0) }
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    periodToggle
+                    switch store.status {
+                    case .loading:
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                    case .denied:
+                        deniedNotice
+                    case .ready:
+                        ForEach(store.days) { DayCard(day: $0) }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
+            .background(Color(.systemBackground))
         }
-        .background(Color(.systemBackground))
+        .task { await store.load() }
+        .onChange(of: windowStartHour) { Task { await store.load() } }
+        .onChange(of: blockCount) { Task { await store.load() } }
+        .onChange(of: blockHours) { Task { await store.load() } }
+    }
+
+    private var deniedNotice: some View {
+        VStack(spacing: 12) {
+            Text("Calendar access is off")
+                .font(.system(size: 17, weight: .semibold))
+            Text("Enable it in Settings › Privacy › Calendars to see your schedule and free time.")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                Link("Open Settings", destination: url)
+                    .font(.system(size: 17, weight: .semibold))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 40)
     }
 
     private var header: some View {
@@ -137,7 +209,16 @@ private struct CalendarScreen: View {
             }
             Spacer()
             HStack(spacing: 16) {
-                GlassCircleButton(symbol: "gear") {}
+                NavigationLink {
+                    SettingsView()
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 48, height: 48)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular, in: .circle)
             }
         }
         .padding(.top, 8)
@@ -188,12 +269,28 @@ private struct GlassCircleButton: View {
     }
 }
 
-private struct EventBar: View {
-    let segments: [EventSegment]
+// 6 slots in a row. Free = green, busy = grey. Consecutive same-state
+// slots merge into a single capsule; a lone slot renders as a circle.
+private struct AvailabilityBar: View {
+    let slots: [Bool]
+    private let cell: CGFloat = 16
+    private let gap: CGFloat = 4
+
+    // Collapse the slots into runs of (isFree, count).
+    private var runs: [(free: Bool, count: Int)] {
+        slots.reduce(into: []) { runs, free in
+            if runs.last?.free == free { runs[runs.count - 1].count += 1 }
+            else { runs.append((free, 1)) }
+        }
+    }
+
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(segments) { seg in
-                Capsule().fill(seg.color).frame(width: seg.width, height: 16)
+        HStack(spacing: gap) {
+            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                Capsule()
+                    .fill(run.free ? Color.freeGreen : Color.segGray16)
+                    .frame(width: CGFloat(run.count) * cell + CGFloat(run.count - 1) * gap,
+                           height: cell)
             }
         }
     }
@@ -218,7 +315,7 @@ private struct DayCard: View {
                     Text(day.date).font(.system(size: 34, weight: .bold))
                 }
                 Spacer()
-                EventBar(segments: day.segments)
+                AvailabilityBar(slots: day.slots)
                 Button { withAnimation(.snappy) { expanded.toggle() } } label: {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 19, weight: .semibold))
@@ -258,7 +355,7 @@ private struct FreeSlotTable: View {
     let slot: FreeSlot
     var body: some View {
         VStack(spacing: 0) {
-            row(title: "Free from", time: slot.start)
+            row(title: "From", time: slot.start)
             Divider().padding(.leading, 16)
             row(title: "Until", time: slot.end)
         }
