@@ -21,6 +21,9 @@ struct ConnectView: View {
     @State private var addCode = ""
     @State private var addTarget: Group?
 
+    @FocusState private var focused: Field?
+    private enum Field { case join, create }
+
     var body: some View {
         List {
             calendarsSection
@@ -33,6 +36,12 @@ struct ConnectView: View {
         }
         .navigationTitle("Connect")
         .tint(.color1)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focused = nil }
+            }
+        }
         .alert("Add person", isPresented: $showAdd) {
             TextField("Paste their code", text: $addCode)
             Button("Add") { addPerson() }
@@ -123,19 +132,27 @@ struct ConnectView: View {
                 .lineLimit(1...4)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .focused($focused, equals: .join)
             Button("Join group") { join() }
                 .disabled(joinCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if let joinError {
                 Text(joinError).font(.footnote).foregroundStyle(.red)
             }
             TextField("New group name", text: $newName)
-            Button("Create group") {
-                let g = groups.createGroup(named: newName)
-                groups.activeGroupID = g.id
-                newName = ""
-            }
-            .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .focused($focused, equals: .create)
+                .submitLabel(.done)
+                .onSubmit(create)   // Return creates it, even if the button is under the keyboard.
+            Button("Create group", action: create)
+                .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+    }
+
+    private func create() {
+        guard !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let g = groups.createGroup(named: newName)
+        groups.activeGroupID = g.id
+        newName = ""
+        focused = nil
     }
 
     private var accounts: [String] {
@@ -149,7 +166,7 @@ struct ConnectView: View {
     private func join() {
         if let g = groups.join(code: joinCode) {
             groups.activeGroupID = g.id
-            joinCode = ""; joinError = nil
+            joinCode = ""; joinError = nil; focused = nil
         } else {
             joinError = "That code didn't look valid. Paste the whole code or link."
         }
