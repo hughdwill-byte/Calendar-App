@@ -23,6 +23,7 @@ struct ContentView: View {
             if calendar.authStatus == .notDetermined {
                 await calendar.requestAccess()
             }
+            await NotificationManager.reschedule(calendar: calendar, groups: groups)
         }
     }
 }

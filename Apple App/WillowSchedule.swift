@@ -75,14 +75,28 @@ enum ScheduleBuilder {
         let today = cal.startOfDay(for: Date())
         let base = cal.dateInterval(of: .weekOfYear, for: today)?.start ?? today
         let weekStart = cal.date(byAdding: .weekOfYear, value: offset, to: base) ?? base
-        let isGroup = (group?.members.isEmpty == false)
 
-        let plans: [DayPlan] = (0..<7).compactMap { i in
-            guard let day = cal.date(byAdding: .day, value: i, to: weekStart) else { return nil }
+        let plans = self.plans(from: weekStart, count: 7, group: group,
+                               calendar: calendar, minMinutes: minMinutes, using: cal)
+        let (img, desc) = hero(weekStart: weekStart, calendar: cal)
+        return WillowWeek(plans: plans,
+                          title: titleRange(weekStart: weekStart, calendar: cal),
+                          subtitle: subtitle(offset: offset),
+                          heroImage: img, heroDescription: desc)
+    }
+
+    /// `count` days of DayPlans starting at `startDay` — reused for the Home week
+    /// and for scheduling notifications from today forward.
+    static func plans(from startDay: Date, count: Int, group: Group?,
+                      calendar store: CalendarStore, minMinutes: Int,
+                      using cal: Calendar = .current) -> [DayPlan] {
+        let isGroup = (group?.members.isEmpty == false)
+        return (0..<count).compactMap { i in
+            guard let day = cal.date(byAdding: .day, value: i, to: startDay) else { return nil }
             let dayStart = cal.startOfDay(for: day)
             guard let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) else { return nil }
 
-            var busy = calendar.busy(from: dayStart, to: dayEnd)
+            var busy = store.busy(from: dayStart, to: dayEnd)
             if let group {
                 for m in group.members {
                     busy += m.busy.filter { $0.start < dayEnd && $0.end > dayStart }
@@ -93,12 +107,6 @@ enum ScheduleBuilder {
             return DayPlan(date: dayStart, events: blocks,
                            dynamicCardMessage: message(blocks: blocks, isGroup: isGroup))
         }
-
-        let (img, desc) = hero(weekStart: weekStart, calendar: cal)
-        return WillowWeek(plans: plans,
-                          title: titleRange(weekStart: weekStart, calendar: cal),
-                          subtitle: subtitle(offset: offset),
-                          heroImage: img, heroDescription: desc)
     }
 
     private static func titleRange(weekStart: Date, calendar: Calendar) -> String {

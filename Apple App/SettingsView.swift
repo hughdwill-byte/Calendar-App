@@ -6,6 +6,8 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(CalendarStore.self) private var calendar
+    @Environment(GroupStore.self) private var groups
     @AppStorage("notificationsPerDay") private var notificationsPerDay: Int = 1
     @AppStorage("notificationSpacingHours") private var notificationSpacingHours: Int = 3
     @AppStorage("freeTimeMinLengthMinutes") private var freeTimeMinLengthMinutes: Int = 30
@@ -21,6 +23,14 @@ struct SettingsView: View {
             .font(.largeTitle)
             .padding()
         }
+        .onChange(of: notificationsPerDay) { reschedule() }
+        .onChange(of: notificationSpacingHours) { reschedule() }
+        .onChange(of: freeTimeMinLengthMinutes) { reschedule() }
+        .onChange(of: weeklySummaryEnabled) { reschedule() }
+    }
+
+    private func reschedule() {
+        Task { await NotificationManager.reschedule(calendar: calendar, groups: groups) }
     }
 
     private var settingsHeader: some View {
