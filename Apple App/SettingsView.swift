@@ -2,28 +2,27 @@
 //  SettingsView.swift
 //  Apple App
 //
-//  Created by Hugh Williams on 13/7/2026.
-//
 
 import SwiftUI
 
 struct SettingsView: View {
-    @State private var setting1Value: Bool = false
-    @State private var setting2Value: Bool = false
-    @AppStorage(SettingsKey.windowStartHour) private var windowStartHour: Int = 8
-    @AppStorage(SettingsKey.blockCount) private var blockCount: Int = 6
-    @AppStorage(SettingsKey.blockHours) private var blockHours: Int = 2
+    @AppStorage("notificationsPerDay") private var notificationsPerDay: Int = 1
+    @AppStorage("notificationSpacingHours") private var notificationSpacingHours: Int = 3
+    @AppStorage("freeTimeMinLengthMinutes") private var freeTimeMinLengthMinutes: Int = 30
+    @AppStorage("weeklySummaryEnabled") private var weeklySummaryEnabled: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading) {
-            settingsHeader
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading) {
+                settingsHeader
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.largeTitle)
+            .padding()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .font(.largeTitle)
-        .padding()
     }
-    
+
     private var settingsHeader: some View {
         VStack(alignment: .leading) {
             HStack(alignment: .top) {
@@ -31,58 +30,53 @@ struct SettingsView: View {
                     .fontWeight(.bold)
             }
             HStack {
-                Text("Setting 1")
+                Text("Notifications Per Day")
                     .padding()
                     .font(.body)
+                    .fontWeight(.bold)
                 Spacer()
-                Toggle("", isOn: $setting1Value)
-                    .labelsHidden()
-                    .toggleStyle(SwitchToggleStyle())
-            }
-            HStack {
-                Text("Setting 2")
-                    .padding()
-                    .font(.body)
-                Spacer()
-                Toggle("", isOn: $setting2Value)
-                    .labelsHidden()
-                    .toggleStyle(SwitchToggleStyle())
-            }
-            HStack {
-                Text("Start Time")
-                    .padding()
-                    .font(.body)
-                Spacer()
-                Picker("", selection: $windowStartHour) {
-                    ForEach(0..<24, id: \.self) { hour in
-                        Text(String(format: "%02d:00", hour)).tag(hour)
-                    }
-                }
-                .labelsHidden()
-            }
-            HStack {
-                Text("Number of Periods")
-                    .padding()
-                    .font(.body)
-                Spacer()
-                Picker("", selection: $blockCount) {
-                    ForEach(0..<9, id: \.self) { count in
+                Picker("", selection: $notificationsPerDay) {
+                    ForEach(1..<6, id: \.self) { count in
                         Text("\(count)").tag(count)
                     }
                 }
                 .labelsHidden()
             }
             HStack {
-                Text("Period Length (h)")
+                Text("Hours Between Notifications")
                     .padding()
                     .font(.body)
+                    .fontWeight(.bold)
                 Spacer()
-                Picker("", selection: $blockHours) {
-                    ForEach(0..<4, id: \.self) { count in
-                        Text("\(count)").tag(count)
+                Picker("", selection: $notificationSpacingHours) {
+                    ForEach(1..<13, id: \.self) { hour in
+                        Text("\(hour)").tag(hour)
                     }
                 }
                 .labelsHidden()
+            }
+            HStack {
+                Text("Free Time Length (min)")
+                    .padding()
+                    .font(.body)
+                    .fontWeight(.bold)
+                Spacer()
+                Picker("", selection: $freeTimeMinLengthMinutes) {
+                    ForEach([15, 30, 45, 60, 90, 120, 180], id: \.self) { minutes in
+                        Text("\(minutes)").tag(minutes)
+                    }
+                }
+                .labelsHidden()
+            }
+            HStack {
+                Text("Weekly Summary")
+                    .padding()
+                    .font(.body)
+                    .fontWeight(.bold)
+                Spacer()
+                Toggle("", isOn: $weeklySummaryEnabled)
+                    .labelsHidden()
+                    .toggleStyle(SwitchToggleStyle())
             }
         }
     }
